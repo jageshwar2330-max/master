@@ -13,9 +13,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # ------------------------
       # Checkout and setup
-      # ------------------------
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -29,9 +27,7 @@ jobs:
           pip install --upgrade pip
           pip install bandit semgrep black isort flake8 pylint detect-secrets jq
 
-      # ------------------------
       # Run scans
-      # ------------------------
       - name: Run Bandit (security)
         run: bandit -r . -f json -o bandit.json || true
 
@@ -48,9 +44,7 @@ jobs:
       - name: Run Detect-Secrets (hardcoded secrets)
         run: detect-secrets scan > secrets.json || true
 
-      # ------------------------
-      # Generate combined JSON summary
-      # ------------------------
+      # Generate combined JSON summary with proper quoting
       - name: Generate JSON summary
         run: |
           flake8_content="[]"
@@ -63,13 +57,15 @@ jobs:
                 --slurpfile semgrep semgrep.json \
                 --slurpfile pylint pylint.json \
                 --slurpfile secrets secrets.json \
-                '{
-                  bandit: $bandit[0].results // [],
+                '
+                {
+                  bandit: ($bandit[0].results // []),
                   semgrep: ($semgrep[0].results // []),
                   flake8: $flake8,
-                  pylint: $pylint[0] // [],
-                  secrets: $secrets[0].results // []
-                }' > summary-report.json
+                  pylint: ($pylint[0] // []),
+                  secrets: ($secrets[0].results // [])
+                }
+                ' > summary-report.json
 
       - name: Upload JSON report
         uses: actions/upload-artifact@v4
@@ -77,36 +73,28 @@ jobs:
           name: summary-json
           path: ./summary-report.json
 
-      # ------------------------
       # Generate human-readable error.log table
-      # ------------------------
       - name: Generate human-readable error log
         run: |
-          # Create error.log with headers
           echo "File Name (Line) | Potential Issue | Suggested Fix" > error.log
           echo "-----------------|----------------|----------------" >> error.log
 
-          # Bandit 🔴 Hardcoded secrets
           if [ -s bandit.json ]; then
             jq -r '.results[] | "\(.filename):\(.line_number) | 🔴 Hardcoded secret / Security issue | Remove hardcoded secret or use secret manager"' bandit.json >> error.log 2>/dev/null
           fi
 
-          # Semgrep 🟡 Anti-patterns / warnings
           if [ -s semgrep.json ]; then
             jq -r '.results[] | "\(.path):\(.start.line) | 🟡 Potential anti-pattern / Security | Fix according to Semgrep rule \(.check_id)"' semgrep.json >> error.log 2>/dev/null
           fi
 
-          # Flake8 🟢 Style / formatting
           if [ -s flake8.json ]; then
             jq -r '.[] | "\(.filename):\(.line_number) | 🟢 Style / formatting | Fix E or W code \(.code)"' flake8.json >> error.log 2>/dev/null
           fi
 
-          # Pylint 🟢 Best practices / code smells
           if [ -s pylint.json ]; then
             jq -r '.[] | "\(.path):\(.line) | 🟢 Best practice / Code smell | Fix issue \(.symbol)"' pylint.json >> error.log 2>/dev/null
           fi
 
-          # Detect-Secrets 🔴 Hardcoded secrets
           if [ -s secrets.json ]; then
             jq -r '.results | to_entries[] | "\(.value.filename):\(.value.line_number) | 🔴 Hardcoded secret | Remove or secure secret"' secrets.json >> error.log 2>/dev/null
           fi
@@ -117,9 +105,7 @@ jobs:
           name: error-log
           path: ./error.log
 
-      # ------------------------
-      # Post PR summary comment in Markdown table with color-coded issues
-      # ------------------------
+      # Post PR summary comment
       - name: Post PR summary comment
         uses: marocchino/sticky-pull-request-comment@v2
         with:
