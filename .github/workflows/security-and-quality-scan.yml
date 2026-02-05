@@ -39,44 +39,31 @@ jobs:
     - name: Detect-Secrets Scan (Hardcoded Secrets)
       run: detect-secrets scan > secrets.json || true
 
-    - name: Generate error log (with severity & passed checks)
+    - name: Generate error log (severity, suggested fix, passed checks)
       continue-on-error: true
       run: |
-        echo "File (Line) | Tool (Purpose) | Severity | Result | Code" > error.log
-        echo "------------|----------------|----------|--------|-----" >> error.log
+        echo "File (Line) | Tool (Purpose) | Severity | Result | Suggested Fix | Code" > error.log
+        echo "------------|----------------|----------|--------|---------------|-----" >> error.log
 
         extract_code() {
           sed -n "${2}p" "$1" 2>/dev/null | sed 's/|/ /g'
         }
 
         pass() {
-          echo "- | $1 | INFO | PASSED | -" >> error.log
+          echo "- | $1 | INFO | PASSED | - | -" >> error.log
         }
 
-        tmp_high=$(mktemp)
-        tmp_med=$(mktemp)
-        tmp_low=$(mktemp)
-        tmp_info=$(mktemp)
-
-        # HIGH — Detect-Secrets
-        if jq -e '.results | length > 0' secrets.json >/dev/null 2>&1; then
-          jq -r '.results | to_entries[] |
-            "\(.value.filename)|\(.value.line_number)|Detect-Secrets (Hardcoded Secrets)"' secrets.json |
-          while IFS="|" read file line tool; do
-            code=$(extract_code "$file" "$line")
-            echo "$file:$line | $tool | HIGH | FAILED | $code" >> $tmp_high
-          done
-        else
-          pass "Detect-Secrets (Hardcoded Secrets)"
-        fi
+        high=$(mktemp)
+        medium=$(mktemp)
+        low=$(mktemp)
 
         # HIGH — Bandit
         if jq -e '.results | length > 0' bandit.json >/dev/null 2>&1; then
           jq -r '.results[] |
-            "\(.filename)|\(.line_number)|Bandit (Security)"' bandit.json |
-          while IFS="|" read file line tool; do
+            "\(.filename)|\(.line_number)|Bandit (Security)|Remove hardcoded secret or insecure API usage"' bandit.json |
+          while IFS="|" read file line tool fix; do
             code=$(extract_code "$file" "$line")
-            echo "$file:$line | $tool | HIGH | FAILED | $code" >> $tmp_high
+            echo "$file:$line | $tool | HIGH | FAILED | $fix | $code" >> "$high"
           done
         else
           pass "Bandit (Security)"
@@ -85,45 +72,60 @@ jobs:
         # MEDIUM — Semgrep
         if jq -e '.results | length > 0' semgrep.json >/dev/null 2>&1; then
           jq -r '.results[] |
-            "\(.path)|\(.start.line)|Semgrep (Security & Anti-patterns)"' semgrep.json |
-          while IFS="|" read file line tool; do
+            "\(.path)|\(.start.line)|Semgrep (Security & Anti-patterns)|Fix according to rule \(.check_id)"' semgrep.json |
+          while IFS="|" read file line tool fix; do
             code=$(extract_code "$file" "$line")
-            echo "$file:$line | $tool | MEDIUM | FAILED | $code" >> $tmp_med
+            echo "$file:$line | $tool | MEDIUM | FAILED | $fix | $code" >> "$medium"
           done
         else
           pass "Semgrep (Security & Anti-patterns)"
         fi
 
-        # LOW — Pylint
-        if jq -e 'length > 0' pylint.json >/dev/null 2>&1; then
-          jq -r '.[] |
-            "\(.path)|\(.line)|Pylint (Best Practices)"' pylint.json |
-          while IFS="|" read file line tool; do
-            code=$(extract_code "$file" "$line")
-            echo "$file:$line | $tool | LOW | FAILED | $code" >> $tmp_low
-          done
-        else
-          pass "Pylint (Best Practices)"
-        fi
-
         # LOW — Flake8
         if jq -e 'length > 0' flake8.json >/dev/null 2>&1; then
           jq -r '.[] |
-            "\(.filename)|\(.line_number)|Flake8 (Style & Formatting)"' flake8.json |
-          while IFS="|" read file line tool; do
+            "\(.filename)|\(.line_number)|Flake8 (Style & Formatting)|Fix PEP8 violation \(.code)"' flake8.json |
+          while IFS="|" read file line tool fix; do
             code=$(extract_code "$file" "$line")
-            echo "$file:$line | $tool | LOW | FAILED | $code" >> $tmp_low
+            echo "$file:$line | $tool | LOW | FAILED | $fix | $code" >> "$low"
           done
         else
           pass "Flake8 (Style & Formatting)"
         fi
 
-        cat $tmp_high >> error.log
-        cat $tmp_med >> error.log
-        cat $tmp_low >> error.log
-        cat $tmp_info >> error.log
+        # LOW — Pylint
+        if jq -e 'length > 0' pylint.json >/dev/null 2>&1; then
+          jq -r '.[] |
+            "\(.path)|\(.line)|Pylint (Best Practices)|Refactor to fix \(.symbol)"' pylint.json |
+          while IFS="|" read file line tool fix; do
+            code=$(extract_code "$file" "$line")
+            echo "$file:$line | $tool | LOW | FAILED | $fix | $code" >> "$low"
+          done
+        else
+          pass "Pylint (Best Practices)"
+        fi
 
-        rm -f $tmp_high $tmp_med $tmp_low $tmp_info
+        # HIGH — Detect-Secrets (FIXED)
+        if jq -e '.results | length > 0' secrets.json >/dev/null 2>&1; then
+          jq -r '
+            .results | to_entries[] |
+            .key as $file |
+            .value[] |
+            "\($file)|\(.line_number)|Detect-Secrets (Hardcoded Secrets)|Move secret to env or secret manager"
+          ' secrets.json |
+          while IFS="|" read file line tool fix; do
+            code=$(extract_code "$file" "$line")
+            echo "$file:$line | $tool | HIGH | FAILED | $fix | $code" >> "$high"
+          done
+        else
+          pass "Detect-Secrets (Hardcoded Secrets)"
+        fi
+
+        cat "$high" >> error.log
+        cat "$medium" >> error.log
+        cat "$low" >> error.log
+
+        rm -f "$high" "$medium" "$low"
 
     - name: Upload error log
       if: always()
