@@ -60,7 +60,7 @@ jobs:
                 '{
                   bandit: $bandit[0].results // [],
                   semgrep: $semgrep[0].results // [],
-                  flake8: $flake8[0] // [],
+                  flake8: $fl = $flake8[0] // [],
                   pylint: $pylint[0] // [],
                   secrets: $secrets[0].results // []
                 }' > summary-report.json
@@ -69,39 +69,50 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: summary-json
-          path: summary-report.json
+          path: ./summary-report.json
 
       # ------------------------
-      # Generate human-readable error.log table with line numbers
+      # Generate human-readable error.log table
       # ------------------------
       - name: Generate human-readable error log
         run: |
+          # Create error.log with headers
           echo "File Name (Line) | Potential Issue | Suggested Fix" > error.log
           echo "-----------------|----------------|----------------" >> error.log
 
-          # Bandit
-          jq -r '.results[] | "\(.filename):\(.line_number) | Hardcoded secret / Security issue | Remove hardcoded secret or use secret manager"' bandit.json 2>/dev/null >> error.log
+          # Bandit 🔴 Hardcoded secrets
+          if [ -s bandit.json ]; then
+            jq -r '.results[] | "\(.filename):\(.line_number) | 🔴 Hardcoded secret / Security issue | Remove hardcoded secret or use secret manager"' bandit.json >> error.log 2>/dev/null
+          fi
 
-          # Semgrep
-          jq -r '.results[] | "\(.path):\(.start.line) | Potential anti-pattern / Security | Fix according to Semgrep rule \(.check_id)"' semgrep.json 2>/dev/null >> error.log
+          # Semgrep 🟡 Anti-patterns / warnings
+          if [ -s semgrep.json ]; then
+            jq -r '.results[] | "\(.path):\(.start.line) | 🟡 Potential anti-pattern / Security | Fix according to Semgrep rule \(.check_id)"' semgrep.json >> error.log 2>/dev/null
+          fi
 
-          # Flake8
-          jq -r '.[] | "\(.filename):\(.line_number) | Style / formatting | Fix E or W code \(.code)"' flake8.json 2>/dev/null >> error.log
+          # Flake8 🟢 Style / formatting
+          if [ -s flake8.json ]; then
+            jq -r '.[] | "\(.filename):\(.line_number) | 🟢 Style / formatting | Fix E or W code \(.code)"' flake8.json >> error.log 2>/dev/null
+          fi
 
-          # Pylint
-          jq -r '.[] | "\(.path):\(.line) | Best practice / Code smell | Fix issue \(.symbol)"' pylint.json 2>/dev/null >> error.log
+          # Pylint 🟢 Best practices / code smells
+          if [ -s pylint.json ]; then
+            jq -r '.[] | "\(.path):\(.line) | 🟢 Best practice / Code smell | Fix issue \(.symbol)"' pylint.json >> error.log 2>/dev/null
+          fi
 
-          # Detect-Secrets
-          jq -r '.results | to_entries[] | "\(.value.filename):\(.value.line_number) | Hardcoded secret | Remove or secure secret"' secrets.json 2>/dev/null >> error.log
+          # Detect-Secrets 🔴 Hardcoded secrets
+          if [ -s secrets.json ]; then
+            jq -r '.results | to_entries[] | "\(.value.filename):\(.value.line_number) | 🔴 Hardcoded secret | Remove or secure secret"' secrets.json >> error.log 2>/dev/null
+          fi
 
       - name: Upload error log
         uses: actions/upload-artifact@v4
         with:
           name: error-log
-          path: error.log
+          path: ./error.log
 
       # ------------------------
-      # Post PR summary comment in Markdown table
+      # Post PR summary comment in Markdown table with color-coded issues
       # ------------------------
       - name: Post PR summary comment
         uses: marocchino/sticky-pull-request-comment@v2
@@ -112,17 +123,17 @@ jobs:
             | File Name (Line) | Potential Issue | Suggested Fix |
             |-----------------|----------------|----------------|
             $(
-              jq -r '.results[] | "\(.filename):\(.line_number) | Hardcoded secret / Security issue | Remove hardcoded secret or use secret manager"' bandit.json 2>/dev/null
+              jq -r '.results[] | "\(.filename):\(.line_number) | 🔴 Hardcoded secret / Security issue | Remove hardcoded secret or use secret manager"' bandit.json 2>/dev/null || echo ""
             )
             $(
-              jq -r '.results[] | "\(.path):\(.start.line) | Potential anti-pattern / Security | Fix according to Semgrep rule \(.check_id)"' semgrep.json 2>/dev/null
+              jq -r '.results[] | "\(.path):\(.start.line) | 🟡 Potential anti-pattern / Security | Fix according to Semgrep rule \(.check_id)"' semgrep.json 2>/dev/null || echo ""
             )
             $(
-              jq -r '.[] | "\(.filename):\(.line_number) | Style / formatting | Fix E or W code \(.code)"' flake8.json 2>/dev/null
+              jq -r '.[] | "\(.filename):\(.line_number) | 🟢 Style / formatting | Fix E or W code \(.code)"' flake8.json 2>/dev/null || echo ""
             )
             $(
-              jq -r '.[] | "\(.path):\(.line) | Best practice / Code smell | Fix issue \(.symbol)"' pylint.json 2>/dev/null
+              jq -r '.[] | "\(.path):\(.line) | 🟢 Best practice / Code smell | Fix issue \(.symbol)"' pylint.json 2>/dev/null || echo ""
             )
             $(
-              jq -r '.results | to_entries[] | "\(.value.filename):\(.value.line_number) | Hardcoded secret | Remove or secure secret"' secrets.json 2>/dev/null
+              jq -r '.results | to_entries[] | "\(.value.filename):\(.value.line_number) | 🔴 Hardcoded secret | Remove or secure secret"' secrets.json 2>/dev/null || echo ""
             )
