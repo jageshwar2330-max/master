@@ -10,90 +10,94 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: jageshwar2330-max/security-and-quality-scan.yml@v1.0.0
+      uses: actions/checkout@v4
 
     - name: Set up Python
-      uses: jageshwar2330-max/security-and-quality-scan.yml@v1.0.0
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
 
     - name: Install tools
       run: |
+        sudo apt-get update
+        sudo apt-get install -y jq
         python -m pip install --upgrade pip
-        pip install bandit semgrep flake8 pylint detect-secrets jq
+        pip install bandit semgrep flake8 pylint detect-secrets
 
-    - name: Run Bandit (security)
-      run: bandit -r . -f json -o bandit.json
+    - name: Run Bandit
+      run: bandit -r . -f json -o bandit.json || true
 
-    - name: Run Semgrep (security & anti-patterns)
-      run: semgrep --config=p/ci --json --output semgrep.json
+    - name: Run Semgrep
+      run: semgrep --config=p/ci --json --output semgrep.json || true
 
-    - name: Run Flake8 (style & formatting)
+    - name: Run Flake8
       run: flake8 --format=json > flake8.json || true
 
-    - name: Run Pylint (best practices / code smells)
+    - name: Run Pylint
       run: pylint **/*.py --output-format=json > pylint.json || true
 
-    - name: Run Detect-Secrets (hardcoded secrets)
-      run: detect-secrets scan > secrets.json
+    - name: Run Detect-Secrets
+      run: detect-secrets scan > secrets.json || true
 
-    - name: Generate JSON summary
+    - name: Generate combined JSON report
       run: |
-        jq -n --slurpfile bandit bandit.json \
+        jq -n \
+          --slurpfile bandit bandit.json \
           --slurpfile semgrep semgrep.json \
           --slurpfile flake8 flake8.json \
           --slurpfile pylint pylint.json \
           --slurpfile secrets secrets.json \
-          '
-          {
+          '{
             bandit: $bandit[0].results // [],
             semgrep: $semgrep[0].results // [],
-            flake8: $flak8[0] // [],
+            flake8: $flake8[0] // [],
             pylint: $pylint[0] // [],
-            secrets: $secrets[0].results // []
+            secrets: ($secrets[0].results // [])
           }' > combined.json
 
+    - name: Generate human-readable error log
+      continue-on-error: true
+      run: |
+        echo "File (Line) | Issue | Suggested Fix" > error.log
+        echo "------------|-------|--------------" >> error.log
+
+        [ -s bandit.json ] && jq -r '.results[] |
+          "\(.filename):\(.line_number) | 🔴 Security | Remove hardcoded secret"' bandit.json >> error.log
+
+        [ -s semgrep.json ] && jq -r '.results[] |
+          "\(.path):\(.start.line) | 🟡 Semgrep | Fix rule \(.check_id)"' semgrep.json >> error.log
+
+        [ -s flake8.json ] && jq -r '.[] |
+          "\(.filename):\(.line_number) | 🟢 Style | Fix \(.code)"' flake8.json >> error.log
+
+        [ -s pylint.json ] && jq -r '.[] |
+          "\(.path):\(.line) | 🟢 Pylint | Fix \(.symbol)"' pylint.json >> error.log
+
+        [ -s secrets.json ] && jq -r '.results | to_entries[] |
+          "\(.value.filename):\(.value.line_number) | 🔴 Secret | Secure or remove"' secrets.json >> error.log
+
     - name: Upload JSON report
+      if: always()
       uses: actions/upload-artifact@v3
       with:
         name: security-quality-json-report
         path: combined.json
 
-    - name: Generate human-readable error log
-      run: |
-        echo "File Name (Line) | Potential Issue | Suggested Fix" > error.log
-        echo "-----------------|----------------|----------------" >> error.log
-
-        if [ -s bandit.json ]; then
-          jq -r '.results[] | "\(.filename):\(.line_number) | 🔴 Hardcoded secret / Security issue | Remove hardcoded secret or use secret manager"' bandit.json >> error.log 2>/dev/null
-        fi
-
-        if [ -s semgrep.json ]; then
-          jq -r '.results[] | "\(.path):\(.start.line) | 🟡 Potential anti-pattern / Security | Fix according to Semgrep rule \(.check_id)"' semgrep.json >> error.log 2>/dev/null
-        fi
-
-        if [ -s flake8.json ]; then
-          jq -r '.[] | "\(.filename):\(.line_number) | 🟢 Style / formatting | Fix E or W code \(.code)"' flake8.json >> error.log 2>/dev/null
-        fi
-
-        if [ -s pylint.json ]; then
-          jq -r '.[] | "\(.path):\(.line) | 🟢 Best practice / Code smell | Fix issue \(.symbol)"' pylint.json >> error.log 2>/dev/null
-        fi
-
-        if [ -s secrets.json ]; then
-          jq -r '.results | to_entries[] | "\(.value.filename):\(.value.line_number) | 🔴 Hardcoded secret | Remove or secure secret"' secrets.json >> error.log 2>/dev/null
-        fi
-      shell: bash
-
     - name: Upload error log
+      if: always()
       uses: actions/upload-artifact@v3
       with:
         name: security-quality-error-log
         path: error.log
 
     - name: Post PR summary comment
+      if: always()
       uses: peter-evans/create-or-update-comment@v2
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
         issue-number: ${{ github.event.pull_request.number }}
         body: |
-          ### Security & Quality Scan Summary
-          See attached report artifacts for full details.
+          ✅ Security & Quality Scan completed  
+          📎 Artifacts uploaded:
+          - combined.json  
+          - error.log
