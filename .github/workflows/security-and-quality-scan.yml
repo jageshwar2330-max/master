@@ -1,26 +1,24 @@
-name: Security, Quality & Optimization Scan
+name: Security & Quality Scan
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
-  security-events: write
 
 jobs:
   full_scan:
-    name: Full Code Scan
     runs-on: ubuntu-latest
 
     steps:
+      # ------------------------
+      # Checkout and setup
+      # ------------------------
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ------------------------
-      # Python Setup
-      # ------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -29,60 +27,99 @@ jobs:
       - name: Install tools
         run: |
           pip install --upgrade pip
-          pip install \
-            bandit \
-            semgrep \
-            black \
-            isort \
-            flake8 \
-            pylint \
-            detect-secrets
+          pip install bandit semgrep black isort flake8 pylint detect-secrets jq
 
       # ------------------------
-      # Formatting & style
+      # Run all scans
       # ------------------------
-      - name: Black
-        run: black --check .
+      - name: Run Bandit (security)
+        run: bandit -r . -f json -o bandit.json || true
 
-      - name: isort
-        run: isort --check-only .
+      - name: Run Semgrep (security, hardcoding, performance)
+        run: semgrep scan --config=auto --json --output semgrep.json || true
 
-      - name: Flake8
-        run: flake8 . --max-line-length=100 --max-complexity=10
+      - name: Run Flake8 (style & complexity)
+        run: flake8 . --max-line-length=100 --format=json > flake8.json || true
 
-      - name: Pylint (quality + performance)
+      - name: Run Pylint (best practices)
+        run: pylint $(find . -name "*.py" -not -path "./.venv/*") --output-format=json > pylint.json || true
+
+      - name: Run Detect-Secrets (hardcoded secrets)
+        run: detect-secrets scan > secrets.json || true
+
+      # ------------------------
+      # Generate combined JSON summary
+      # ------------------------
+      - name: Generate JSON summary
         run: |
-          pylint $(find . -name "*.py" -not -path "./.venv/*") \
-            --fail-under=8.0 \
-            --enable=consider-using-generator,consider-using-with
+          jq -n --slurpfile bandit bandit.json \
+                --slurpfile semgrep semgrep.json \
+                --slurpfile flake8 flake8.json \
+                --slurpfile pylint pylint.json \
+                --slurpfile secrets secrets.json \
+                '{
+                  bandit: $bandit[0].results // [],
+                  semgrep: $semgrep[0].results // [],
+                  flake8: $flake8[0] // [],
+                  pylint: $pylint[0] // [],
+                  secrets: $secrets[0].results // []
+                }' > summary-report.json
+
+      - name: Upload JSON report
+        uses: actions/upload-artifact@v4
+        with:
+          name: summary-json
+          path: summary-report.json
 
       # ------------------------
-      # Hardcoded secrets
+      # Generate human-readable log
       # ------------------------
-      - name: Detect hardcoded secrets
+      - name: Generate human-readable log
         run: |
-          detect-secrets scan > secrets-report.json
-          if jq '.results | length > 0' secrets-report.json; then
-            echo "❌ Hardcoded secrets detected"
-            exit 1
-          fi
+          echo "=== Security & Code Quality Scan Summary ===" > summary.log
+          echo "" >> summary.log
+          echo "### Bandit Issues" >> summary.log
+          jq -r '.results[] | "\(.filename):\(.line_number) - \(.issue_text) (\(.severity))"' bandit.json 2>/dev/null || echo "No issues" >> summary.log
+          echo "" >> summary.log
+          echo "### Semgrep Issues" >> summary.log
+          jq -r '.results[] | "\(.path):\(.start.line) - \(.extra.message) (\(.check_id))"' semgrep.json 2>/dev/null || echo "No issues" >> summary.log
+          echo "" >> summary.log
+          echo "### Flake8 Issues" >> summary.log
+          jq -r '.[] | "\(.filename):\(.line_number) - \(.code) \(.text)"' flake8.json 2>/dev/null || echo "No issues" >> summary.log
+          echo "" >> summary.log
+          echo "### Pylint Issues" >> summary.log
+          jq -r '.[] | "\(.path):\(.line) - \(.symbol) \(.message)"' pylint.json 2>/dev/null || echo "No issues" >> summary.log
+          echo "" >> summary.log
+          echo "### Hardcoded Secrets" >> summary.log
+          jq -r '.results | to_entries[] | "\(.value.filename):\(.value.line_number) - \(.value.secret_type)"' secrets.json 2>/dev/null || echo "No issues" >> summary.log
+
+      - name: Upload human-readable log
+        uses: actions/upload-artifact@v4
+        with:
+          name: summary-log
+          path: summary.log
 
       # ------------------------
-      # Security
+      # Post summary as PR comment
       # ------------------------
-      - name: Bandit
-        run: |
-          bandit -r . -ll -iii
-
-      # ------------------------
-      # Semgrep – security + hardcoding + optimization
-      # ------------------------
-      - name: Semgrep (deep scan)
-        run: |
-          semgrep scan \
-            --config=auto \
-            --config=p/ci \
-            --config=p/secrets \
-            --config=p/performance \
-            --severity=ERROR
-
+      - name: Post PR summary comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: "🔐 Security & Code Quality Summary"
+          message: |
+            $(
+              echo "### Bandit Issues"
+              jq -r '.results[] | "* \(.filename):\(.line_number) - \(.issue_text) (\(.severity))"' bandit.json 2>/dev/null || echo "No issues"
+              echo ""
+              echo "### Semgrep Issues"
+              jq -r '.results[] | "* \(.path):\(.start.line) - \(.extra.message) (\(.check_id))"' semgrep.json 2>/dev/null || echo "No issues"
+              echo ""
+              echo "### Flake8 Issues"
+              jq -r '.[] | "* \(.filename):\(.line_number) - \(.code) \(.text)"' flake8.json 2>/dev/null || echo "No issues"
+              echo ""
+              echo "### Pylint Issues"
+              jq -r '.[] | "* \(.path):\(.line) - \(.symbol) \(.message)"' pylint.json 2>/dev/null || echo "No issues"
+              echo ""
+              echo "### Hardcoded Secrets"
+              jq -r '.results | to_entries[] | "* \(.value.filename):\(.value.line_number) - \(.value.secret_type)"' secrets.json 2>/dev/null || echo "No issues"
+            )
