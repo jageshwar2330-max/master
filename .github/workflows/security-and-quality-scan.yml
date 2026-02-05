@@ -1,18 +1,18 @@
-name: security-and-quality-scan
+name: Security & Quality Factory Scan
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
 
 jobs:
-  full_scan:
+  factory:
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Set up Python
+    - name: Setup Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
@@ -24,42 +24,32 @@ jobs:
         python -m pip install --upgrade pip
         pip install bandit semgrep flake8 pylint detect-secrets
 
-    - name: Run Bandit
+    # 🤖 DROID – Bandit
+    - name: Bandit Security Scan
       run: bandit -r . -f json -o bandit.json || true
 
-    - name: Run Semgrep
+    # 🤖 DROID – Semgrep
+    - name: Semgrep Scan
       run: semgrep --config=p/ci --json --output semgrep.json || true
 
-    - name: Run Flake8
+    # 🤖 DROID – Flake8
+    - name: Flake8 Scan
       run: flake8 --format=json > flake8.json || true
 
-    - name: Run Pylint
+    # 🤖 DROID – Pylint
+    - name: Pylint Scan
       run: pylint **/*.py --output-format=json > pylint.json || true
 
-    - name: Run Detect-Secrets
+    # 🤖 DROID – Detect Secrets
+    - name: Detect Secrets Scan
       run: detect-secrets scan > secrets.json || true
 
-    - name: Generate combined JSON report
-      run: |
-        jq -n \
-          --slurpfile bandit bandit.json \
-          --slurpfile semgrep semgrep.json \
-          --slurpfile flake8 flake8.json \
-          --slurpfile pylint pylint.json \
-          --slurpfile secrets secrets.json \
-          '{
-            bandit: $bandit[0].results // [],
-            semgrep: $semgrep[0].results // [],
-            flake8: $flake8[0] // [],
-            pylint: $pylint[0] // [],
-            secrets: ($secrets[0].results // [])
-          }' > combined.json
-
-    - name: Generate human-readable error log
+    # 🧠 AGGREGATOR – Error Log
+    - name: Generate error log
       continue-on-error: true
       run: |
         echo "File (Line) | Issue | Suggested Fix" > error.log
-        echo "------------|-------|--------------" >> error.log
+        echo "------------|-------|---------------" >> error.log
 
         [ -s bandit.json ] && jq -r '.results[] |
           "\(.filename):\(.line_number) | 🔴 Security | Remove hardcoded secret"' bandit.json >> error.log
@@ -76,28 +66,9 @@ jobs:
         [ -s secrets.json ] && jq -r '.results | to_entries[] |
           "\(.value.filename):\(.value.line_number) | 🔴 Secret | Secure or remove"' secrets.json >> error.log
 
-    - name: Upload JSON report
-      if: always()
-      uses: actions/upload-artifact@v3
-      with:
-        name: security-quality-json-report
-        path: combined.json
-
     - name: Upload error log
       if: always()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: security-quality-error-log
         path: error.log
-
-    - name: Post PR summary comment
-      if: always()
-      uses: peter-evans/create-or-update-comment@v2
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        issue-number: ${{ github.event.pull_request.number }}
-        body: |
-          ✅ Security & Quality Scan completed  
-          📎 Artifacts uploaded:
-          - combined.json  
-          - error.log
