@@ -1,0 +1,83 @@
+name: Security & Best Practices Scan
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  security-events: write
+  pull-requests: write
+
+jobs:
+  security_scan:
+    name: Code Security & Quality Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ------------------------
+      # Python dependency setup
+      # ------------------------
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install security tools
+        run: |
+          pip install --upgrade pip
+          pip install bandit semgrep
+
+      # ------------------------
+      # Bandit – Python security scan
+      # ------------------------
+      - name: Run Bandit (Python security)
+        run: |
+          bandit -r . \
+            -ll \
+            -iii \
+            -f json \
+            -o bandit-report.json
+
+      # ------------------------
+      # Semgrep – Security + Best Practices
+      # ------------------------
+      - name: Run Semgrep
+        run: |
+          semgrep scan \
+            --config=auto \
+            --severity=ERROR \
+            --json \
+            --output=semgrep-report.json
+
+      # ------------------------
+      # Upload reports to PR
+      # ------------------------
+      - name: Upload scan reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            bandit-report.json
+            semgrep-report.json
+
+      # ------------------------
+      # Fail PR if issues found
+      # ------------------------
+      - name: Evaluate scan results
+        run: |
+          BANDIT_ISSUES=$(jq '.results | length' bandit-report.json)
+          SEMGREP_ISSUES=$(jq '.results | length' semgrep-report.json)
+
+          echo "Bandit issues: $BANDIT_ISSUES"
+          echo "Semgrep issues: $SEMGREP_ISSUES"
+
+          if [ "$BANDIT_ISSUES" -gt 0 ] || [ "$SEMGREP_ISSUES" -gt 0 ]; then
+            echo "❌ Security or best practice violations found."
+            exit 1
+          else
+            echo "✅ No critical security issues found."
+          fi
