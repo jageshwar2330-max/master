@@ -39,7 +39,8 @@ jobs:
         run: semgrep scan --config=auto --json --output semgrep.json || true
 
       - name: Run Flake8 (style & formatting)
-        run: flake8 . --max-line-length=100 --format=json > flake8.json || true
+        run: |
+          flake8 . --max-line-length=100 --format=json > flake8.json || echo '[]' > flake8.json
 
       - name: Run Pylint (best practices / code smells)
         run: pylint $(find . -name "*.py" -not -path "./.venv/*") --output-format=json > pylint.json || true
@@ -52,15 +53,20 @@ jobs:
       # ------------------------
       - name: Generate JSON summary
         run: |
+          flake8_content="[]"
+          if jq empty flake8.json 2>/dev/null; then
+            flake8_content=$(cat flake8.json)
+          fi
+
           jq -n --slurpfile bandit bandit.json \
+                --argjson flake8 "$flake8_content" \
                 --slurpfile semgrep semgrep.json \
-                --slurpfile flake8 flake8.json \
                 --slurpfile pylint pylint.json \
                 --slurpfile secrets secrets.json \
                 '{
                   bandit: $bandit[0].results // [],
-                  semgrep: $semgrep[0].results // [],
-                  flake8: $fl = $flake8[0] // [],
+                  semgrep: ($semgrep[0].results // []),
+                  flake8: $flake8,
                   pylint: $pylint[0] // [],
                   secrets: $secrets[0].results // []
                 }' > summary-report.json
