@@ -24,47 +24,88 @@ jobs:
         python -m pip install --upgrade pip
         pip install bandit semgrep flake8 pylint detect-secrets
 
-    # 🤖 DROID – Bandit
-    - name: Bandit Security Scan
+    # 🤖 Bandit
+    - name: Bandit Scan
       run: bandit -r . -f json -o bandit.json || true
 
-    # 🤖 DROID – Semgrep
+    # 🤖 Semgrep
     - name: Semgrep Scan
       run: semgrep --config=p/ci --json --output semgrep.json || true
 
-    # 🤖 DROID – Flake8
+    # 🤖 Flake8
     - name: Flake8 Scan
       run: flake8 --format=json > flake8.json || true
 
-    # 🤖 DROID – Pylint
+    # 🤖 Pylint
     - name: Pylint Scan
       run: pylint **/*.py --output-format=json > pylint.json || true
 
-    # 🤖 DROID – Detect Secrets
-    - name: Detect Secrets Scan
+    # 🤖 Detect-Secrets
+    - name: Detect-Secrets Scan
       run: detect-secrets scan > secrets.json || true
 
-    # 🧠 AGGREGATOR – Error Log
+    # 🧠 Aggregator (safe jq + code line)
     - name: Generate error log
       continue-on-error: true
       run: |
-        echo "File (Line) | Issue | Suggested Fix" > error.log
-        echo "------------|-------|---------------" >> error.log
+        echo "File (Line) | Issue | Suggested Fix | Code" > error.log
+        echo "------------|-------|---------------|------" >> error.log
 
-        [ -s bandit.json ] && jq -r '.results[] |
-          "\(.filename):\(.line_number) | 🔴 Security | Remove hardcoded secret"' bandit.json >> error.log
+        extract_code() {
+          file=$1
+          line=$2
+          sed -n "${line}p" "$file" 2>/dev/null | sed 's/|/ /g'
+        }
 
-        [ -s semgrep.json ] && jq -r '.results[] |
-          "\(.path):\(.start.line) | 🟡 Semgrep | Fix rule \(.check_id)"' semgrep.json >> error.log
+        # 🔴 Bandit
+        if jq -e . bandit.json >/dev/null 2>&1; then
+          jq -r '.results[] |
+            "\(.filename)|\(.line_number)|Security|Remove hardcoded secret"' bandit.json |
+          while IFS="|" read file line issue fix; do
+            code=$(extract_code "$file" "$line")
+            echo "$file:$line | 🔴 $issue | $fix | $code" >> error.log
+          done
+        fi
 
-        [ -s flake8.json ] && jq -r '.[] |
-          "\(.filename):\(.line_number) | 🟢 Style | Fix \(.code)"' flake8.json >> error.log
+        # 🟡 Semgrep
+        if jq -e . semgrep.json >/dev/null 2>&1; then
+          jq -r '.results[] |
+            "\(.path)|\(.start.line)|Semgrep|Fix rule \(.check_id)"' semgrep.json |
+          while IFS="|" read file line issue fix; do
+            code=$(extract_code "$file" "$line")
+            echo "$file:$line | 🟡 $issue | $fix | $code" >> error.log
+          done
+        fi
 
-        [ -s pylint.json ] && jq -r '.[] |
-          "\(.path):\(.line) | 🟢 Pylint | Fix \(.symbol)"' pylint.json >> error.log
+        # 🟢 Flake8
+        if jq -e . flake8.json >/dev/null 2>&1; then
+          jq -r '.[] |
+            "\(.filename)|\(.line_number)|Flake8|Fix \(.code)"' flake8.json |
+          while IFS="|" read file line issue fix; do
+            code=$(extract_code "$file" "$line")
+            echo "$file:$line | 🟢 $issue | $fix | $code" >> error.log
+          done
+        fi
 
-        [ -s secrets.json ] && jq -r '.results | to_entries[] |
-          "\(.value.filename):\(.value.line_number) | 🔴 Secret | Secure or remove"' secrets.json >> error.log
+        # 🟢 Pylint
+        if jq -e . pylint.json >/dev/null 2>&1; then
+          jq -r '.[] |
+            "\(.path)|\(.line)|Pylint|Fix \(.symbol)"' pylint.json |
+          while IFS="|" read file line issue fix; do
+            code=$(extract_code "$file" "$line")
+            echo "$file:$line | 🟢 $issue | $fix | $code" >> error.log
+          done
+        fi
+
+        # 🔴 Detect-Secrets
+        if jq -e . secrets.json >/dev/null 2>&1; then
+          jq -r '.results | to_entries[] |
+            "\(.value.filename)|\(.value.line_number)|Secret|Secure or remove"' secrets.json |
+          while IFS="|" read file line issue fix; do
+            code=$(extract_code "$file" "$line")
+            echo "$file:$line | 🔴 $issue | $fix | $code" >> error.log
+          done
+        fi
 
     - name: Upload error log
       if: always()
